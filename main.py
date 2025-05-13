@@ -1,3 +1,4 @@
+import os
 from flask import Flask, request, jsonify
 from datetime import datetime
 
@@ -27,3 +28,7 @@ def message():
         reply = f"Unknown command: {command}"
 
     return jsonify({"reply": reply})
+
+# Use port from environment variable (for Railway)
+port = int(os.environ.get("PORT", 5000))
+app.run(host="0.0.0.0", port=port)
