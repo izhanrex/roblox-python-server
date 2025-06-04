@@ -1,88 +1,59 @@
-from flask import Flask, request, jsonify, render_template_string, redirect
+from flask import Flask, request, jsonify
 from datetime import datetime
-import threading
 import requests
-import time
+import textwrap
 import os
 
-# === DISCORD CONFIG ===
-USER_TOKEN = os.getenv("DISCORD_USER_TOKEN")  # Set in Railway env vars
-CHANNEL_ID = os.getenv("DISCORD_CHANNEL_ID")
-POLL_INTERVAL = 0.1
-HEADERS = {
-    'Authorization': USER_TOKEN,
-    'User-Agent': 'Mozilla/5.0',
-}
-
-# === FLASK SETUP ===
 app = Flask(__name__)
 messages = {}  # player name → list of messages
 
-# === DISCORD POLLING ===
-def get_latest_message_id(channel_id):
-    url = f'https://discord.com/api/v9/channels/{channel_id}/messages?limit=1'
-    response = requests.get(url, headers=HEADERS)
-    if response.status_code == 200:
-        messages = response.json()
-        if messages:
-            return messages[0]['id']
-    print(f"Failed to get latest message: {response.status_code} {response.text}")
-    return None
+WRAP_WIDTH = 80
+MAX_COMMENTS = 5
+HEADERS = {
+    "User-Agent": "TerminalRedditReader/1.1 by OpenAI"
+}
 
-def get_new_messages(channel_id, after_message_id):
-    url = f'https://discord.com/api/v9/channels/{channel_id}/messages'
-    params = {'limit': 50, 'after': after_message_id}
-    response = requests.get(url, headers=HEADERS, params=params)
-    return response.json() if response.status_code == 200 else []
+def wrap(text):
+    return "\n".join(textwrap.wrap(text, WRAP_WIDTH))
 
-def discord_polling_loop():
-    print("🟢 Discord polling started...")
-    last_seen_id = get_latest_message_id(CHANNEL_ID)
-    if not last_seen_id:
-        print("⚠️ Failed to fetch starting message ID.")
-        return
-    while True:
-        try:
-            new_msgs = get_new_messages(CHANNEL_ID, last_seen_id)
-            if new_msgs:
-                for msg in reversed(new_msgs):
-                    author = msg['author']['username']
-                    content = msg['content']
-                    full = f"{author}: {content}"
-                    print("📩 New Discord message:", full)
-                    messages.setdefault("__broadcast__", []).append(full)
-                    last_seen_id = msg['id']
-        except Exception as e:
-            print("❌ Exception during Discord polling:", e)
-        time.sleep(POLL_INTERVAL)
+def search_subreddits(query):
+    url = f"https://www.reddit.com/subreddits/search.json?q={query}&limit=10"
+    try:
+        response = requests.get(url, headers=HEADERS, timeout=10)
+        response.raise_for_status()
+        return [f"r/{item['data']['display_name']}: {item['data'].get('title', '')}" for item in response.json()["data"]["children"]]
+    except Exception as e:
+        return [f"[Reddit search error] {e}"]
 
-# === HTML FORM ===
-html_form = """
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Broadcast to All Roblox Players</title>
-    <style>
-        body { font-family: sans-serif; background-color: #f4f4f4; padding: 20px; }
-        form { background: white; padding: 20px; max-width: 400px; margin: auto; border-radius: 8px; box-shadow: 0 0 10px rgba(0,0,0,0.1); }
-        textarea, button { width: 100%; margin-top: 10px; padding: 10px; font-size: 16px; }
-        button { background: #007bff; color: white; border: none; cursor: pointer; }
-    </style>
-</head>
-<body>
-    <form method="POST">
-        <h2>Broadcast Message to All Players</h2>
-        <textarea name="text" placeholder="Type your message here..." required></textarea>
-        <button type="submit">Send</button>
-    </form>
-</body>
-</html>
-"""
+def fetch_subreddit_posts(subreddit):
+    url = f"https://www.reddit.com/r/{subreddit}/hot.json?limit=5"
+    try:
+        response = requests.get(url, headers=HEADERS, timeout=10)
+        response.raise_for_status()
+        posts = response.json()["data"]["children"]
+        return [f"{p['data']['title']} ({p['data']['score']} pts)" for p in posts]
+    except Exception as e:
+        return [f"[Failed to fetch posts] {e}"]
 
-# === FLASK ROUTES ===
-@app.route("/", methods=["GET"])
-def index():
-    return "Server is up and running!"
+def fetch_post_comments(permalink):
+    url = f"https://www.reddit.com{permalink}.json"
+    try:
+        response = requests.get(url, headers=HEADERS, timeout=10)
+        response.raise_for_status()
+        data = response.json()[1]["data"]["children"]
+        comments = []
+        for c in data:
+            if c["kind"] != "t1":
+                continue
+            author = c["data"].get("author")
+            body = c["data"].get("body")
+            if author and body:
+                comments.append(f"u/{author}: {wrap(body)}")
+            if len(comments) >= MAX_COMMENTS:
+                break
+        return comments if comments else ["[No valid comments found]"]
+    except Exception as e:
+        return [f"[Failed to load comments] {e}"]
 
 @app.route("/", methods=["POST"])
 def message():
@@ -91,44 +62,33 @@ def message():
     player = data.get("player", "")
     payload = data.get("payload", {})
 
-    if command == "greet":
-        reply = f"Hello, {player}!"
-    elif command == "getTime":
-        reply = f"Current server time: {datetime.now().isoformat()}"
-    elif command == "echo":
-        reply = f"Echo: {payload.get('text', '')}"
-    elif command == "sendMessage":
-        msg = payload.get("text", "")
-        messages.setdefault(player, []).append(msg)
-        reply = f"Message stored for {player}"
-    elif command == "getMessages":
-        player_msgs = messages.get(player, [])
-        messages[player] = []
-
-        broadcast_msgs = messages.get("__broadcast__", [])
-        messages["__broadcast__"] = []
-
-        reply = broadcast_msgs + player_msgs
+    if command == "redditSearch":
+        query = payload.get("query", "")
+        result = search_subreddits(query)
+    elif command == "redditPosts":
+        subreddit = payload.get("subreddit", "")
+        result = fetch_subreddit_posts(subreddit)
+    elif command == "redditComments":
+        permalink = payload.get("permalink", "")
+        result = fetch_post_comments(permalink)
     else:
-        reply = f"Unknown command: {command}"
+        result = [f"Unknown command: {command}"]
 
-    return jsonify({"reply": reply})
+    messages.setdefault(player, []).extend(result)
+    return jsonify({"reply": result})
 
-@app.route("/send", methods=["GET"])
-def show_send_form():
-    return render_template_string(html_form)
+@app.route("/", methods=["GET"])
+def health():
+    return "Server running"
 
-@app.route("/send", methods=["POST"])
-def handle_send_form():
-    text = request.form.get("text")
-    if text:
-        messages.setdefault("__broadcast__", []).append(text)
-        print(f"📢 Broadcast message: {text}")
-        return redirect("/send")
-    return "Missing message!", 400
+@app.route("/getMessages", methods=["POST"])
+def get_messages():
+    data = request.json
+    player = data.get("player", "")
+    player_msgs = messages.get(player, [])
+    messages[player] = []
+    return jsonify({"messages": player_msgs})
 
-# === START SERVER AND THREAD ===
 if __name__ == "__main__":
-    threading.Thread(target=discord_polling_loop, daemon=True).start()
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
