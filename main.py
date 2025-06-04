@@ -1,37 +1,34 @@
+import os
 from flask import Flask, request, jsonify
 from datetime import datetime
 
 app = Flask(__name__)
 
-# Shared server-wide message (global)
-latest_message = None
-
 @app.route("/", methods=["GET"])
 def index():
     return "Server is up and running!"
 
-@app.route("/broadcast", methods=["POST"])
-def broadcast():
-    global latest_message
+@app.route("/", methods=["POST"])
+def message():
     data = request.json
-    message = data.get("message", "").strip()
 
-    if message:
-        latest_message = message
-        print(f"[Broadcast] New message: {latest_message}")
-        return jsonify({"status": "ok", "message": latest_message})
+    command = data.get("command", "")
+    player = data.get("player", "")
+    payload = data.get("payload", {})
+
+    print(f"[{player}] Command: {command} | Payload: {payload}")
+
+    if command == "greet":
+        reply = f"Hello, {player}!"
+    elif command == "getTime":
+        reply = f"Current server time: {datetime.now().isoformat()}"
+    elif command == "echo":
+        reply = f"Echo: {payload.get('text', '')}"
     else:
-        return jsonify({"status": "error", "message": "Empty message"}), 400
+        reply = f"Unknown command: {command}"
 
-@app.route("/get_broadcast", methods=["POST"])
-def get_broadcast():
-    global latest_message
-    if latest_message:
-        msg = latest_message
-        latest_message = None  # clear after sending once
-        return jsonify({"message": msg})
-    else:
-        return jsonify({"message": None})
+    return jsonify({"reply": reply})
 
-if __name__ == "__main__":
-    app.run(host='0.0.0.0', port=8080)
+# Use port from environment variable (for Railway)
+port = int(os.environ.get("PORT", 5000))
+app.run(host="0.0.0.0", port=port)
