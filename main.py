@@ -37,6 +37,5 @@ def message():
     # You can modify these messages dynamically based on game events
     return jsonify(sample_messages)
 
-# Start the Flask app
 if __name__ == "__main__":
     app.run(host='0.0.0.0', port=8080)
