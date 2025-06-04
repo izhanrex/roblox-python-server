@@ -3,39 +3,35 @@ from datetime import datetime
 
 app = Flask(__name__)
 
-# Sample messages you can update dynamically
-sample_messages = [
-    "Welcome to the game, player!",
-    "Double XP weekend is active!",
-    "Don't forget to join our community group!"
-]
+# Shared server-wide message (global)
+latest_message = None
 
 @app.route("/", methods=["GET"])
 def index():
     return "Server is up and running!"
 
-@app.route("/", methods=["POST"])
-def message():
+@app.route("/broadcast", methods=["POST"])
+def broadcast():
+    global latest_message
     data = request.json
-    command = data.get("command", "")
-    player = data.get("player", "")
-    payload = data.get("payload", {})
+    message = data.get("message", "").strip()
 
-    print(f"[{player}] Command: {command} | Payload: {payload}")
-
-    # Handle commands and update the messages
-    if command == "greet":
-        reply = f"Hello, {player}!"
-    elif command == "getTime":
-        reply = f"Current server time: {datetime.now().isoformat()}"
-    elif command == "echo":
-        reply = f"Echo: {payload.get('text', '')}"
+    if message:
+        latest_message = message
+        print(f"[Broadcast] New message: {latest_message}")
+        return jsonify({"status": "ok", "message": latest_message})
     else:
-        reply = f"Unknown command: {command}"
+        return jsonify({"status": "error", "message": "Empty message"}), 400
 
-    # Example: sending a list of server messages to Roblox
-    # You can modify these messages dynamically based on game events
-    return jsonify(sample_messages)
+@app.route("/get_broadcast", methods=["POST"])
+def get_broadcast():
+    global latest_message
+    if latest_message:
+        msg = latest_message
+        latest_message = None  # clear after sending once
+        return jsonify({"message": msg})
+    else:
+        return jsonify({"message": None})
 
 if __name__ == "__main__":
     app.run(host='0.0.0.0', port=8080)
